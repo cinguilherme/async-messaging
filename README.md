@@ -1,10 +1,51 @@
 # async-messaging
 
-A Clojure library designed to ... well, that part is up to you.
+A Clojure library designed to abstract alot about messaging systems, providing a simple and easy to use protocol and compoenents to work with messaging systems.
+
+All the components are designed to be used within system maps with the [Component](https://github.com/stuartsierra/component) library.
+
+The library provides two independend protocols, producer and consumer. 
+The producer protocol is used to send messages to a messaging system, while the consumer protocol is used to receive messages from a messaging system.
 
 ## Usage
 
-FIXME
+Just like any other component, you can use the `start` and `stop` functions to start and stop the components.
+
+```clojure
+
+(require '[async-messaging.core :as am])
+
+(def system
+  (-> (component/system-map
+       :producer (am/start-producer {:type :kafka :config {:bootstrap.servers "localhost:9092"}})
+       :consumer (am/start-consumer {:type :kafka :config {:bootstrap.servers "localhost:9092"}}))
+      (component/start)))
+
+;; do something with the system
+
+(component/stop system)
+```
+
+There is a lot of hacking done in `dev.clj` to test the undeling libs and the components. You can use it as a reference to see how to use the components.
+
+
+### Supported Systems, so far
+```
+w - wip
+x - not planned
+v - supported
+```
+
+
+- [] Kafka
+- [w] RabbitMQ
+- [ ] ActiveMQ
+- [ ] Google PubSub
+- [ ] Amazon SQS
+- [w] Redis
+- [v] In Memory EventBus (mainly for testing enviroments where not even a docker container is allowed)
+- [w] NATS streaming
+
 
 ## License
 
