@@ -1,5 +1,5 @@
 (ns async-messaging.redis.core
-  (:require [clojure.pprint :as pprint]
+  (:require [clojure.pprint :as pprint] 
             [taoensso.carmine :as car :refer [wcar]]
             [taoensso.carmine.message-queue :as car-mq]))
 
