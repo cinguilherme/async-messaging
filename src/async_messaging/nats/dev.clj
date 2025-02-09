@@ -1,11 +1,10 @@
 (ns async-messaging.nats.dev
   (:require [nats.core :as nats]
-            [nats.message :as nats.message]
             [nats.consumer :as consumer]
             [nats.stream :as stream]
             [com.stuartsierra.component :as component]
-            [async-messaging.protocols.protocols :as proto]
-            [async-messaging.protocols.nats.component :as nats-component]))
+            [async-messaging.protocols :as proto]
+            [async-messaging.nats.component :as nats-component]))
 
 
 (def conn (nats/connect "nats://localhost:4222"))
