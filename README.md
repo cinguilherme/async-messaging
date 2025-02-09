@@ -1,3 +1,8 @@
+[![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg)](https://clojars.org/org.clojars.cinguilherme/async-messaging)
+
+[![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg?include_prereleases)]
+
+
 # async-messaging
 
 A Clojure library designed to abstract alot about messaging systems, providing a simple and easy to use protocol and compoenents to work with messaging systems.
@@ -30,21 +35,17 @@ There is a lot of hacking done in `dev.clj` to test the undeling libs and the co
 
 
 ### Supported Systems, so far
-```
-w - wip
-x - not planned
-v - supported
-```
-
+Supported but does not mean that it is fully implemented or tested or even working as expected.
+Look at the version number for this lib, this is far form ready to be used in production.
 
 - [] Kafka
-- [w] RabbitMQ
+- [x] RabbitMQ
 - [ ] ActiveMQ
 - [ ] Google PubSub
 - [ ] Amazon SQS
-- [w] Redis
-- [v] In Memory EventBus (mainly for testing enviroments where not even a docker container is allowed)
-- [w] NATS streaming
+- [x] Redis
+- [x] In Memory EventBus (mainly for testing enviroments where not even a docker container is allowed)
+- [] NATS streaming
 
 
 ## License
