@@ -2,15 +2,48 @@
 
 [![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg?include_prereleases)]
 
-
 # async-messaging
 
-A Clojure library designed to abstract alot about messaging systems, providing a simple and easy to use protocol and compoenents to work with messaging systems.
+async-messaging is a Clojure library that abstracts messaging systems by providing a unified producer and consumer protocol. It simplifies integration with different messaging systems while keeping application code agnostic to the underlying implementation.
 
-All the components are designed to be used within system maps with the [Component](https://github.com/stuartsierra/component) library.
+All components are designed to work with the [Component](https://github.com/stuartsierra/component) library, allowing them to be managed within a system map.
 
-The library provides two independend protocols, producer and consumer. 
-The producer protocol is used to send messages to a messaging system, while the consumer protocol is used to receive messages from a messaging system.
+## Why?
+
+Messaging frameworks often introduce rigid APIs and assumptions. While this can be useful, it also makes switching between systems difficult and forces applications to conform to a specific design.
+
+async-messaging is built to:
+- **Reduce vendor lock-in** by offering an **unopinionated** API.
+- **Allow switching messaging backends** without modifying application logic.
+- **Standardize message production and consumption** while still allowing system-specific configurations when needed.
+
+## Design Decisions
+
+The library defines two independent protocols:
+
+- **Producer:** Sends messages to a messaging system.
+- **Consumer:** Receives and processes messages.
+
+### Consumer Design
+
+The **consumer's handler function should be completely interchangeable** across different messaging systems. The library ensures that the way you **process** a message does not depend on the messaging backend.
+
+However, messaging systems differ in how they handle:
+- **Dead-letter queues (DLQs):** Some systems support automatic DLQs (e.g., SQS, RabbitMQ), while others require custom handling.
+- **Retries & failure handling:** Some systems offer built-in retry mechanisms, while others need a manual requeue strategy.
+- **Message ordering guarantees:** Kafka provides ordered delivery, while RabbitMQ and SQS do not guarantee strict ordering.
+
+async-messaging abstracts the **core** consumer behavior, but system-specific features (like dead-letter handling) **may need explicit configuration**.
+
+### Producer Design
+
+The producer protocol is more complex due to system differences in:
+- **Destinations:** Topics vs. queues vs. event buses.
+- **Routing & filtering:** Systems like RabbitMQ allow custom exchange types, while SQS has no equivalent.
+- **Message scheduling & delays:** Only a few systems (e.g., SQS, RabbitMQ with plugins) allow scheduled or delayed delivery.
+- **Message expiration (TTL):** Some systems automatically drop old messages, while others retain them indefinitely.
+
+async-messaging provides a **common API** for sending messages, but system-specific options (e.g., delayed messages, retries, DLQs) require explicit configuration per messaging backend.
 
 ## Usage
 
@@ -47,6 +80,33 @@ Look at the version number for this lib, this is far form ready to be used in pr
 - [x] In Memory EventBus (mainly for testing enviroments where not even a docker container is allowed)
 - [ ] NATS streaming
 
+
+## Testing Considerations
+
+async-messaging is designed with **testability** in mind. All components—producers and consumers—can be configured to allow side effects to be **recuperable**, making it possible to inspect what was sent and received.
+
+### Why is this important?
+
+In real-world applications, messaging systems are often involved in complex workflows. Consider this example:
+
+1. A **POST** request triggers a database write.
+2. The system **produces a message** into a queue.
+3. A consumer **processes** the message and updates another database table.
+
+While traditional tests might only assert the final database state, **being able to verify messaging behavior directly** is crucial for:
+- Ensuring that the **producer actually produced messages**.
+- Checking that the **consumer processed messages in the expected order**.
+- Validating that **dead-letter messages were properly handled**.
+
+### Built-in Test Helpers
+
+Consumers provide an interface to inspect consumed messages and dead-letter queues:
+
+```clojure
+;; Retrieve consumed messages and dead letters during a test
+(consumer/delta)
+;; => {:consumed-messages [...] :deadletters [...]}
+```
 
 ## License
 
