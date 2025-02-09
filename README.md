@@ -38,14 +38,14 @@ There is a lot of hacking done in `dev.clj` to test the undeling libs and the co
 Supported but does not mean that it is fully implemented or tested or even working as expected.
 Look at the version number for this lib, this is far form ready to be used in production.
 
-- [] Kafka
+- [ ] Kafka
 - [x] RabbitMQ
 - [ ] ActiveMQ
 - [ ] Google PubSub
 - [ ] Amazon SQS
 - [x] Redis
 - [x] In Memory EventBus (mainly for testing enviroments where not even a docker container is allowed)
-- [] NATS streaming
+- [ ] NATS streaming
 
 
 ## License
