@@ -1,6 +1,6 @@
 (ns async-messaging.redis.component
   (:require [com.stuartsierra.component :as component]
-            [async-messaging.protocols.protocols :as proto]
+            [async-messaging.protocols :as proto]
             [taoensso.carmine :as car :refer [wcar]]
             [taoensso.carmine.message-queue :as car-mq]
             [clojure.pprint :as pprint]))

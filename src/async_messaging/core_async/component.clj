@@ -2,8 +2,8 @@
   (:require
    [clojure.core.async :as async]
    [com.stuartsierra.component :as component]
-   [async-messaging.protocols.protocols :as protocol]
-   [async-messaging.protocols.core-async.core :as core]))
+   [async-messaging.protocols :as protocol]
+   [async-messaging.core-async.core :as core]))
 
 (defrecord CoreAsyncProducer [channels]
   component/Lifecycle

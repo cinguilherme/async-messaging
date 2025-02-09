@@ -2,8 +2,8 @@
   (:require
    [clojure.pprint :refer [pprint]]
    [com.stuartsierra.component :as component]
-   [async-messaging.protocols.protocols :as proto]
-   [async-messaging.protocols.in-mem-event-bus.core :as core]))
+   [async-messaging.protocols :as proto]
+   [async-messaging.in-mem-event-bus.core :as core]))
 
 (defn tap [x]
   (pprint x)

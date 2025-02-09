@@ -1,8 +1,8 @@
 (ns async-messaging.nats.component
   (:require [com.stuartsierra.component :as component]
-            [async-messaging.protocols.nats.core :as core]
+            [async-messaging.nats.core :as core]
             [nats.stream :as stream]
-            [async-messaging.protocols.protocols :as proto]
+            [async-messaging.protocols :as proto]
             [nats.core :as nats]
             [nats.consumer :as consumer]))
 

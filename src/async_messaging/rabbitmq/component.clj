@@ -1,6 +1,6 @@
 (ns async-messaging.rabbitmq.component
   (:require [com.stuartsierra.component :as component]
-            [async-messaging.protocols.protocols :as proto]
+            [async-messaging.protocols :as proto]
             [langohr.core      :as rmq]
             [langohr.channel   :as lch]
             [langohr.exchange  :as le]
