@@ -23,3 +23,12 @@
   (listen
     [this setting]
     [this setting ops]))
+
+(defprotocol ObservableSideEffects
+  "A protocol for side effects that can be observed by the system
+   this is useful for testing and monitoring purposes only and not all components 
+   will implement this but its imperative to allow for users of the component 
+   to assert that things happend in the system can be observed and asserted on"
+  (get-side-effects
+    [this]
+    [this ops]))
