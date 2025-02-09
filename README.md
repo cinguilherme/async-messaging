@@ -1,6 +1,17 @@
-[![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg)](https://clojars.org/org.clojars.cinguilherme/async-messaging)
+> [![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg)](https://clojars.org/org.clojars.cinguilherme/async-messaging)
 
-[![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg?include_prereleases)]
+
+> ![Clojars Project](https://img.shields.io/clojars/v/org.clojars.cinguilherme/async-messaging.svg?include_prereleases)
+
+Lein
+```clojure
+[org.clojars.cinguilherme/async-messaging "0.0.5-SNAPSHOT"]
+```
+
+deps.edn
+```clojure
+org.clojars.cinguilherme/async-messaging {:mvn/version "0.0.5-SNAPSHOT"}
+```
 
 # async-messaging
 
