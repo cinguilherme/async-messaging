@@ -1,4 +1,4 @@
-(defproject org.clojars.cinguilherme/async-messaging "0.0.2"
+(defproject org.clojars.cinguilherme/async-messaging "0.0.2-SNAPSHOT"
 
   :description "Abstration protocol and components to be used in system map defined by stuart sierra component system"
 
