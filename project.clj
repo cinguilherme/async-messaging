@@ -33,11 +33,22 @@
                  [medley/medley "1.3.0"]
                  [clj-time/clj-time "0.15.2"]
                  [criterium/criterium "0.4.6"]
-                
+
                  ;; loggings
                  [org.clojure/tools.logging "1.3.0"]
                  [org.apache.logging.log4j/log4j-api "2.17.1"]
                  [org.apache.logging.log4j/log4j-core "2.17.1"]
-                 [org.apache.logging.log4j/log4j-slf4j-impl "2.17.1"]] 
+                 [org.apache.logging.log4j/log4j-slf4j-impl "2.17.1"]]
+
+  
+  ;; add necessary plugins for linting:
+  :plugins [[lein-kibit "0.1.8"]
+            [jonase/eastwood "0.9.8"]]
+
+  ;; define custom aliases:
+  :aliases {"lint"  ["do" "kibit," "eastwood"]
+            "build" ["do" "clean," "uberjar"]
+            "test"  ["do" "test"]}
+
 
   :repl-options {:init-ns async-messaging.core})

@@ -18,15 +18,6 @@
             ))
 
 (comment
-  (def bus  (atom {}))
-  (def test? true)
-
-  (def event-map {:queue "test-queue"})
-
-  (def producer (component/start (c-bus/create-in-mem-producer event-map bus test?)))
-
-  (println producer)
-
-  (proto/send-message producer {:destination {:queue "test-queue"} :message "test-message"} {})
+  
   
   )

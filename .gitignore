@@ -16,3 +16,7 @@ pom.xml.asc
 .clj-kondo
 .idea
 .vscode
+.aider.conf.yml
+.env
+.aiderignore
+.aider*

@@ -1,0 +1,865 @@
+-- ./src/async_messaging/protocols.clj --protocols.clj
+(ns async-messaging.protocols)
+
+(defprotocol CommonProducer
+  "A protocol for sending messages to a message queue, 
+   has to be generic to the point of not knowing the underlying implementation 
+   and working fine with Redis, Kafka, SQS, RabbitMQ, etc.
+   message is a map and at least it has a key :message and :destination each being a map 
+   witch underling component implementation may require diferent keys
+    ops is a config map that should be adhered by all implementations with the following keys
+    :async? s/Bool default false, this will indicate if the producer will be async or not for blocking or non blocking operation"
+  (send-message
+    [this message]
+    [this message ops])
+  (send-messages
+    [this messages]
+    [this messages ops]))
+
+(defprotocol CommonConsumer
+  "Start a consumer worker for a given settings
+   settings is a map with the following keys: {:event-consumer-x {:handler s/fn :reciever-details s/map}}
+    details will be provided by the implementation detail for each messaging technology
+    and optionally an `ops` map for implementation-specific options."
+  (listen
+    [this setting]
+    [this setting ops]))
+
+(defprotocol ObservableSideEffects
+  "A protocol for side effects that can be observed by the system
+   this is useful for testing and monitoring purposes only and not all components 
+   will implement this but its imperative to allow for users of the component 
+   to assert that things happend in the system can be observed and asserted on"
+  (get-side-effects
+    [this]
+    [this ops]))
+-- ./src/async_messaging/redis/component.clj --component.clj
+(ns async-messaging.redis.component
+  (:require [com.stuartsierra.component :as component]
+            [async-messaging.protocols :as proto]
+            [taoensso.carmine :as car :refer [wcar]]
+            [taoensso.carmine.message-queue :as car-mq]
+            [clojure.pprint :as pprint]))
+
+(defn tap [v]
+  (pprint/pprint  v)
+  v)
+
+;- :min-idle-per-key  ; Min num of idle conns to keep per sub-pool (Default 0)
+;- :max-idle-per-key  ; Max num of idle conns to keep per sub-pool (Default 16)
+;- :max-total-per-key ; Max num of idle or active conns <...>      (Default 16)
+(def poll-configs {})
+(def default-producer-ops {:async? false})
+
+(defrecord RedisProducer [server-info pool-settings events-map consumer-map]
+  component/Lifecycle
+  (start [this]
+    (let [conn-spec {:uri (-> server-info :uri)}
+          conn-pool (car/connection-pool pool-settings)
+          wcar-opts {:pool conn-pool :spec conn-spec}]
+      (assoc this :redis-producer {:wcar wcar-opts})))
+  (stop [this]
+    (dissoc this :redis-producer))
+
+  proto/CommonProducer
+  (send-message [this message ops]
+    (let [opsx (tap (merge default-producer-ops ops))
+          wcar-opts (-> this :redis-producer :wcar)
+          payload (-> message :message)
+          destination (-> message :destination)
+          async? (-> opsx :async?)]
+      (if async?
+        (future (car/wcar wcar-opts (car-mq/enqueue (:queue destination) payload)))
+        (car/wcar wcar-opts (car-mq/enqueue (:queue destination) payload)))))
+  (send-messages [this messages ops]
+    (let [opsx (merge default-producer-ops ops)
+          async? (-> opsx :async?)]
+      (mapv (fn [message]
+              (let [wcar-opts (-> this :redis-producer :wcar)
+                    payload (-> message :message)
+                    destination (-> message :destination)]
+                (if async?
+                  (future (car/wcar wcar-opts (car-mq/enqueue (:queue destination) payload)))
+                  (car/wcar wcar-opts (car-mq/enqueue (:queue destination) payload))))) messages))))
+
+(defn create-redis-producer 
+  ([server-info pool-settings]
+   (->RedisProducer server-info pool-settings {} {}))
+  ([server-info pool-settings events-map consumer-map]
+   (->RedisProducer server-info pool-settings events-map consumer-map)))
+
+(declare start-list)
+(defn start-list [list wcar-opts]
+  (mapv (fn [settings]
+          (println "starting consumer for settings" settings)
+          (let [queue (-> settings :queue)
+                callback (-> settings :handler)
+                error-callback (-> settings :error-callback)]
+            (car-mq/worker wcar-opts queue
+                           {:handler callback
+                            :error-callback error-callback})))
+        list))
+
+(defrecord RedisConsumer [server-info pool-settings events-map consumer-map]
+  component/Lifecycle
+  (start [this]
+    (let [conn-spec {:uri (-> server-info :uri)}
+          conn-pool (car/connection-pool pool-settings)
+          wcar-opts {:pool conn-pool :spec conn-spec}] 
+      (println "Starting Redis Consumer")
+      (assoc this :redis-consumer {:wcar wcar-opts})))
+  (stop [this]
+    (println "Stopping Redis Consumer")
+    ;; before dissoc the redis-consumer we need to stop all the consumers listeners in :redis-consumer :consumers
+    (doseq [worker (-> this :redis-consumer :consumers)]
+      (deref worker)
+      (worker :stop))
+    (dissoc this :redis-consumer))
+
+  proto/CommonConsumer
+  (listen
+    [this settings] ;; settings will be {:consumer-x {:handler s/fn :error-callback s/fn :queue s/str}}
+    (let [wcar-opts (-> this :redis-consumer :wcar)
+          list (-> settings vals)
+          consumers-list (start-list list wcar-opts)
+          redis-consumer (:redis-consumer this)
+          with-consumers (assoc redis-consumer :consumers consumers-list)]
+      (assoc this :redis-consumer with-consumers))))
+
+(defn create-redis-consumer 
+  ([server-info pool-settings]
+   (->RedisConsumer server-info pool-settings {} {}))
+  ([server-info pool-settings events-map consumer-map]
+   (->RedisConsumer server-info pool-settings events-map consumer-map)))
+
+-- ./src/async_messaging/redis/core.clj --core.clj
+(ns async-messaging.redis.core
+  (:require [clojure.pprint :as pprint] 
+            [taoensso.carmine :as car :refer [wcar]]
+            [taoensso.carmine.message-queue :as car-mq]))
+
+(defn tap [v]
+  (pprint/pprint  v)
+  v)
+
+;; macro for tapd
+(defmacro tapd [v & body]
+  `(do
+     (pprint/pprint ~v)))
+
+(tapd {:a "b"})
+
+
+(defonce my-conn-pool (car/connection-pool {})) ; Create a new stateful pool
+
+(def     my-conn-spec {:uri "redis://localhost:6379/"})
+(defn    conn-spec [uri] {:uri uri})
+
+(def     my-wcar-opts {:pool my-conn-pool, :spec my-conn-spec})
+(def     my-conn-opts {:pool my-conn-pool :spec my-conn-spec})
+
+(defmacro wcar* [& body] `(car/wcar my-wcar-opts ~@body))
+
+    ;;  hacking with Redis gets and sets, using carmine
+(comment
+
+  (defonce my-conn-pool (car/connection-pool {})) ; Create a new stateful pool
+
+  (def     my-conn-spec {:uri "redis://localhost:6379/"})
+  (def     my-wcar-opts {:pool my-conn-pool, :spec my-conn-spec})
+
+  (def     my-conn-opts {:pool my-conn-pool :spec my-conn-spec})
+
+  (defmacro wcar* [& body] `(car/wcar my-wcar-opts ~@body))
+
+    ;; hacking with Redis gets and sets, using carmine
+
+  (wcar my-wcar-opts (car/ping))
+
+  (defonce my-conn-pool (car/connection-pool {})) ; Create a new stateful pool
+
+  (def     my-conn-spec {:uri "redis://localhost:6379/"})
+  (def     my-wcar-opts {:pool my-conn-pool, :spec my-conn-spec})
+
+  (wcar my-wcar-opts (car/ping))
+
+  (defmacro wcar* [& body] `(car/wcar my-wcar-opts ~@body))
+
+  (wcar*
+   (car/ping)
+   (car/set "foo" "bar")
+   (car/get "foo")) ;
+
+
+  (wcar*
+   (car/set "clj-key"
+            {:bigint (bigint 31415926535897932384626433832795)
+             :vec    (vec (range 5))
+             :set    #{true false :a :b :c :d}
+             :bytes  (byte-array 5)
+         ;; ...
+             })
+
+   (car/get "clj-key"))
+
+
+  (clojure.repl/doc car/sort)
+    ;;
+  )
+
+
+  ;; Carmine messaging queue only hacking producer and consumer
+(comment
+
+  (defonce my-conn-pool (car/connection-pool {})) ; Create a new stateful pool
+
+  (def     my-conn-spec {:uri "redis://localhost:6379/"})
+  (def     my-wcar-opts {:pool my-conn-pool, :spec my-conn-spec})
+
+  (def     my-conn-opts {:pool my-conn-pool :spec my-conn-spec})
+
+  (defmacro wcar* [& body] `(car/wcar my-wcar-opts ~@body))
+
+    ;; consumer worker
+  (def my-worker
+    (car-mq/worker my-conn-opts "my-queue"
+                   {:handler
+                    (fn [{:keys [message attempt]}]
+                      (try
+                        (println "Received" message)
+                        {:status :success}
+                        (catch Throwable _
+                          (println "Handler error!")
+                          {:status :retry})))}))
+
+    ;; prdoducer
+  (wcar* (car-mq/enqueue "my-queue" {:message {:payload "my message!"} :metadata {:a 1 :b 2}})))
+
+
+-- ./src/async_messaging/utils.clj --utils.clj
+(ns async-messaging.utils
+  (:require [clojure.string :as string]
+            [cheshire.core :as json]))
+
+(def ansi-reset "\u001B[0m")
+(def ansi-green "\u001B[32m")
+
+(defn print-json-colored
+  "Prints data as a pretty JSON string in green."
+  [v]
+  (let [json-str (json/generate-string v {:pretty true})
+        lines (string/split-lines json-str)]
+    (doseq [line lines]
+      (println (str ansi-green line ansi-reset)))
+    v))
+
+(defn not-nil? [x] (not (nil? x)))
+
+(defmacro tapc
+  "Evaluates `x`, prints the result in JSON format with colors, then returns it."
+  [x]
+  `(let [result# ~x]
+     (print-json-colored result#)
+     result#))
+
+(comment
+  (tapc {:a 1 "s" "some tring" :id (random-uuid)})
+
+  (tapc {:a      1
+         "s"     "some string"
+         :id     (random-uuid)
+         :nested {:foo [1 2 3]
+                  :bar {:x "hello" :y "world"}}})
+
+  (tapc [{:a 1} {"s" "string"}])
+
+  ;;
+  )
+
+
+
+-- ./src/async_messaging/core.clj --core.clj
+(ns async-messaging.core)
+
+(defn foo
+  "I don't do a whole lot."
+  [x]
+  (println x "Hello, World!"))
+
+-- ./src/async_messaging/rabbitmq/component.clj --component.clj
+(ns async-messaging.rabbitmq.component
+  (:require [com.stuartsierra.component :as component]
+            [async-messaging.protocols :as proto]
+            [langohr.core      :as rmq]
+            [langohr.channel   :as lch]
+            [langohr.exchange  :as le]
+            [langohr.queue     :as lq]
+            [langohr.consumers :as lc]
+            [langohr.basic     :as lb]
+            [clojure.pprint :refer [pprint]]))
+
+(defn tap [v]
+  (pprint v)
+  v)
+
+(defrecord RabbitMQProducer [server-info connection channel]
+  component/Lifecycle
+  (start [this]
+    (let [conn (rmq/connect server-info)
+          ch (lch/open conn)]
+      (println "[RabbitMQProducer] Connected to RabbitMQ.")
+      (assoc this :connection conn :channel ch)))
+
+  (stop [this]
+    (when (:channel this) (rmq/close (:channel this)))
+    (when (:connection this) (rmq/close (:connection this)))
+    (println "[RabbitMQProducer] Disconnected from RabbitMQ.")
+    (assoc this :connection nil :channel nil))
+
+  proto/CommonProducer
+  (send-message [this message ops]
+    (let [exchange (:exchange (:destination message))  ;; Now using an exchange
+          routing-key (:routing-key (:destination message)) ;; Routing key for queue binding
+          payload (:message message)]
+      (lb/publish (:channel this) exchange routing-key payload {:content-type "text/plain"})
+      (println (str "[RabbitMQProducer] Sent message to exchange `" exchange "` with routing key `" routing-key "`"))))
+
+  (send-messages [this messages ops]
+    (doseq [msg messages]
+      (proto/send-message this msg ops))))
+
+
+(defrecord RabbitMQConsumer [server-info connection channel consumers]
+  component/Lifecycle
+  (start [this]
+    (let [conn (rmq/connect server-info)
+          ch (lch/open conn)
+          consumers (atom {})]
+      (println "[RabbitMQConsumer] Connected to RabbitMQ.")
+      (assoc this :connection conn :channel ch :consumers consumers)))
+
+  (stop [this]
+    ;; Stop all consumers
+    (doseq [[_ consumer] @(:consumers this)]
+      (rmq/close consumer))
+    (when (:channel this) (rmq/close (:channel this)))
+    (when (:connection this) (rmq/close (:connection this)))
+    (println "[RabbitMQConsumer] Disconnected from RabbitMQ.")
+    (assoc this :connection nil :channel nil :consumers nil))
+
+  proto/CommonConsumer
+  (listen [this {:keys [exchange queue routing-key handler]}]
+    (let [ch (:channel this)]
+      ;; Declare exchange and queue
+      (le/declare ch exchange "direct" {:durable true})
+      (lq/declare ch queue {:exclusive false :auto-delete true})
+      (lq/bind ch queue exchange {:routing-key routing-key})
+
+      ;; Wrap handler to extract message payload
+      (let [wrapped-handler (fn [ch meta ^bytes payload]
+                              (let [message (String. payload "UTF-8")]
+                                (handler message)))]
+
+        (lc/subscribe ch queue wrapped-handler {:auto-ack true}))
+
+      (println (str "[RabbitMQConsumer] Listening to queue `" queue "` bound to exchange `" exchange "` with routing key `" routing-key "`"))
+      (swap! (:consumers this) assoc queue ch))))
+
+;; Factory function to create a RabbitMQ consumer component
+(defn create-rabbitmq-consumer [server-info]
+  (map->RabbitMQConsumer {:server-info server-info}))
+
+(defn create-rabbitmq-producer [server-info]
+  (map->RabbitMQProducer {:server-info server-info}))
+
+-- ./src/async_messaging/rabbitmq/core.clj --core.clj
+(ns async-messaging.rabbitmq.core
+  (:require [langohr.core      :as rmq]
+            [langohr.channel   :as lch]
+            [langohr.queue     :as lq]
+            [langohr.consumers :as lc]
+            [langohr.basic     :as lb]))
+
+(defn init-connection [host port]
+  (let [conn  (rmq/connect {:host host :port port})
+        ch    (lch/open conn)]
+    {:conn conn :ch ch}))
+
+(defn init-consumer [ch {:keys [queue handler]}]
+  (lq/declare ch queue {:exclusive false :auto-delete true})
+  (lc/subscribe ch queue handler {:auto-ack true}))
+
+(defn init-consumers [ch consumers]
+  (mapv #(init-consumer ch %) consumers))
+
+(defn publish-message [ch queue message]
+  (lb/publish ch "" queue message {:content-type "text/plain"}))
+
+-- ./src/async_messaging/nats/component.clj --component.clj
+(ns async-messaging.nats.component
+  (:require [com.stuartsierra.component :as component]
+            [async-messaging.nats.core :as core]
+            [nats.stream :as stream]
+            [async-messaging.protocols :as proto]
+            [nats.core :as nats]
+            [nats.consumer :as consumer]))
+
+;;end
+
+;; producer
+(defrecord NATSProducer [server-info config connection]
+  component/Lifecycle
+  (start [this]
+    (let [conn (nats/connect (:url server-info))
+          queues (:queues config)]
+      (println "[NATSProducer] Connected to NATS.")
+      ;; Ensure streams exist based on config
+      (doseq [queue queues]
+        (core/ensure-stream-exists conn queue))
+      (assoc this :connection conn)))
+
+  (stop [this]
+    (when (:connection this) (nats/close (:connection this)))
+    (println "[NATSProducer] Disconnected from NATS.")
+    (assoc this :connection nil))
+
+  proto/CommonProducer
+  (send-message [this {:keys [destination message]} opts]
+    (let [conn (:connection this)
+          subject (:queue destination)]
+      (stream/publish conn
+                      {:nats.message/subject subject
+                       :nats.message/data message})
+      (println (str "[NATSProducer] Sent message to `" subject "`"))))
+
+  (send-messages [this messages opts]
+    (doseq [msg messages]
+      (proto/send-message this msg opts))))
+
+;; consumer
+(defrecord NATSConsumer [server-info config connection consumer-name queue handler thread]
+  component/Lifecycle
+  (start [this]
+    (let [conn (nats/connect (:url server-info))
+          safe-name (or consumer-name (str "worker-" (core/sanitize-consumer-name queue)))
+          stream (core/find-stream-for-queue config queue)]
+      (if-not stream
+        (throw (ex-info (str "[NATSConsumer] Queue `" queue "` not found in config.") {:queue queue :config config}))
+        (do
+          (println (str "[NATSConsumer] Connected to NATS. Listening on queue `" queue "` in stream `" stream "` with consumer `" safe-name "`"))
+          (consumer/create-consumer conn
+                                    {:nats.consumer/stream-name stream
+                                     :nats.consumer/name safe-name
+                                     :nats.consumer/durable? true
+                                     :nats.consumer/filter-subjects [queue]})
+          ;; Start message processing loop
+          (let [listener-thread
+                (doto (Thread.
+                       (fn []
+                         (with-open [subscription (consumer/subscribe conn stream safe-name)]
+                           (while true
+                             (when-let [msg (consumer/pull-message subscription 1000)]
+                               (consumer/ack conn msg)
+                               (handler (:nats.message/data msg))
+                               (println (str "[NATSConsumer] Processed message from `" queue "`")))))))
+                  (.start))]
+            (assoc this :connection conn :thread listener-thread))))))
+
+  (stop [this]
+    (when (:connection this) (nats/close (:connection this)))
+    (when thread (.interrupt thread))
+    (println "[NATSConsumer] Disconnected from NATS.")
+    (assoc this :connection nil :thread nil))
+
+  proto/CommonConsumer
+  (listen [this {:keys [queue handler]}]
+    (assoc this :queue queue :handler handler)))
+-- ./src/async_messaging/nats/core.clj --core.clj
+(ns async-messaging.nats.core
+  (:require [clojure.string :as c.string]
+            [nats.stream :as stream]))
+
+
+;; logics to be moved to core
+(defn ensure-stream-exists [conn {:keys [name subjects retention-policy]}]
+  (try
+    (stream/get-stream-info conn name) ;; Check if stream already exists
+    (println (str "[NATSProducer] Stream `" name "` already exists. Skipping creation."))
+    (catch Exception e
+      (println (str "[NATSProducer] Creating stream `" name "`"))
+      (stream/create-stream conn
+                            {:nats.stream/name name
+                             :nats.stream/subjects subjects
+                             :nats.stream/retention-policy (keyword (str "nats.retention-policy/" retention-policy))}))))
+
+(defn subject-matches? [wildcard subject]
+  (let [pattern (-> wildcard
+                    (c.string/replace "." "\\.")  ;; Escape .
+                    (c.string/replace ">" ".*")   ;; Convert > to regex wildcard
+                    (re-pattern))]
+    (re-matches pattern subject)))
+
+(defn find-stream-for-queue [config queue]
+  (some (fn [{:keys [name subjects]}]
+          (when (some #(subject-matches? % queue) subjects)
+            name))
+        (:queues config)))
+
+(defn sanitize-consumer-name [queue]
+  (-> queue
+      (clojure.string/replace "." "-")  ;; Replace dots
+      (clojure.string/replace ">" "")   ;; Remove > wildcard (if exists)
+      (clojure.string/replace "/" "-"))) ;; Replace slashes (if needed)
+
+;;end
+-- ./src/async_messaging/nats/dev.clj --dev.clj
+(ns async-messaging.nats.dev
+  (:require [nats.core :as nats]
+            [nats.consumer :as consumer]
+            [nats.stream :as stream]
+            [com.stuartsierra.component :as component]
+            [async-messaging.protocols :as proto]
+            [async-messaging.nats.component :as nats-component]))
+
+(comment
+
+  (def conn (nats/connect "nats://localhost:4222"))
+
+  (def config-map {:queues [{:name "task-stream"
+                             :subjects ["tasks.>"]
+                             :retention-policy :work-queue}
+                            {:name "task-stream-2"
+                             :subjects ["tasks2.>"]
+                             :retention-policy :work-queue}]})
+
+
+  (def my-stream
+    (stream/create-stream conn
+                          {:nats.stream/name "task-stream"
+                           :nats.stream/subjects ["tasks.>"]
+                           :nats.stream/retention-policy :nats.retention-policy/work-queue}))
+
+  (stream/publish conn
+                  {:nats.message/subject "tasks.email"
+                   :nats.message/data {:to "user@example.com"
+                                       :subject "Welcome!"}})
+
+  (stream/publish conn
+                  {:nats.message/subject "tasks.sms"
+                   :nats.message/data {:to "+1234567890"
+                                       :text "Hello via SMS!"}})
+
+  (consumer/create-consumer conn
+                            {:nats.consumer/stream-name "task-stream"
+                             :nats.consumer/name "worker-1"
+                             :nats.consumer/durable? true
+                             :nats.consumer/filter-subjects ["tasks.email"]})
+
+  (consumer/create-consumer conn
+                            {:nats.consumer/stream-name "task-stream"
+                             :nats.consumer/name "worker-2"
+                             :nats.consumer/durable? true
+                             :nats.consumer/filter-subjects ["tasks.sms"]})
+
+  (defn listen-loop [cn consumer-name]
+    (with-open [subscription (consumer/subscribe cn "task-stream" consumer-name)]
+      (while true
+        (when-let [msg (consumer/pull-message subscription 1000)]
+          (consumer/ack cn msg)
+          (prn (str consumer-name " processed message:") msg)))))
+
+  (def worker-thread-1
+    (doto (Thread. (partial listen-loop conn "worker-1"))
+      (.start)))
+
+  (def worker-thread-2
+    (doto (Thread. (partial listen-loop conn "worker-2"))
+      (.start)))
+
+
+
+  (def config-map
+    {:queues [{:name "task-stream"
+               :subjects ["tasks.>"]
+               :retention-policy :work-queue}
+              {:name "task-stream-2"
+               :subjects ["tasks2.>"]
+               :retention-policy :work-queue}]})
+
+
+  (def producer
+    (nats-component/map->NATSProducer
+     {:server-info {:url "nats://localhost:4222"}
+      :config config-map}))
+
+  (def started-producer (component/start producer))
+  (proto/send-message started-producer {:destination {:queue "tasks.email"}
+                                        :message {:to "user@example.com"
+                                                  :subject "Welcome!"}})
+
+  (def consumer (nats-component/map->NATSConsumer {:server-info {:url "nats://localhost:4222"}
+                                                   :config config-map
+                                                   :queue "tasks.email"}))
+
+  (def started-consumer (component/start consumer))
+  )
+
+-- ./src/async_messaging/in_mem_actors/component.clj --component.clj
+(ns async-messaging.in-mem-actors.component)
+-- ./src/async_messaging/in_mem_actors/core.clj --core.clj
+(ns async-messaging.in-mem-actors.core)
+-- ./src/async_messaging/in_mem_event_bus/component.clj --component.clj
+(ns async-messaging.in-mem-event-bus.component
+  (:require [com.stuartsierra.component :as component]
+            [async-messaging.protocols :as proto]
+            [async-messaging.in-mem-event-bus.core :as core]))
+
+;; Producer
+(defrecord InMemEventBusProducer [events-map bus test?]
+  
+  component/Lifecycle
+  (start [this]
+    (println "In Mem Event Bus Producer starting, this has no real state since it only requires the event-bus to exist")
+    (let [side-effects (if test? (atom {}) nil)]
+      (assoc this :event-bus bus :events-map events-map :side-effects side-effects)))
+    
+  (stop [this]
+    (println "In Mem Event Bus Producer stopping, removing the event-bus")
+    (reset! (:event-bus this) {})
+    (dissoc this :event-bus :events-map :side-effects))
+  
+  proto/CommonProducer
+  (send-message [this message ops]
+    (let [destination (-> message :destination :queue keyword)
+          payload     (-> message :message)
+          side-effects (:side-effects this)]
+      (swap! (:event-bus this)
+             (fn [bus]
+               (let [q (get bus destination clojure.lang.PersistentQueue/EMPTY)]
+                  (when side-effects
+                    (swap! side-effects assoc destination (conj (get side-effects destination []) payload)))
+                 (assoc bus destination (conj q payload))))))
+    nil)
+
+  (send-messages [this messages ops]
+    ;; Batch version, enqueues everything in one swap.
+    (swap! (:event-bus this)
+           (fn [bus]
+             (reduce
+              (fn [acc message]
+                (let [destination (-> message :destination :queue keyword)
+                      payload     (-> message :message)
+                      q           (get acc destination clojure.lang.PersistentQueue/EMPTY)]
+                  (assoc acc destination (conj q payload))))
+              bus
+              messages)))
+    nil)
+  
+  proto/ObservableSideEffects
+  (get-side-effects [this ops]
+    (if test?
+      (let [events-map (:events-map this)]
+        (if (empty? events-map)
+          nil
+          events-map))
+      nil)))
+  
+
+(defn create-in-mem-producer 
+  ([]
+   (->InMemEventBusProducer {} (atom {}) false))
+  ([events-map]
+   (->InMemEventBusProducer events-map (atom {}) false))
+  ([events-map bus]
+   (->InMemEventBusProducer events-map bus false))
+  ([events-map bus test?]
+   (->InMemEventBusProducer events-map bus test?)))
+
+
+;; Consumer
+(defrecord InMemEventBusConsumer [event-bus threads-atom stop?-atom auto-start? events-map consumer-map]
+  component/Lifecycle
+  (start [this]
+    (println "In Mem Event Bus Consumer starting")
+    ;; On start, initialize controlling atoms if they aren’t set yet:
+    (let [stop?-atom   (or stop?-atom (atom false))
+          threads-atom (or threads-atom (atom {}))]
+      (core/iterate-consumer-map-add-listeners! 
+       threads-atom stop?-atom consumer-map event-bus))
+      (assoc this
+             :stop?-atom stop?-atom
+             :threads-atom threads-atom))
+
+  (stop [this]
+    (println "In Mem Event Bus Consumer stopping")
+    (reset! stop?-atom true)
+    (doseq [[_ fut] @threads-atom]
+      (future-cancel fut))
+    (reset! threads-atom {})
+    (assoc this :stop?-atom nil
+           :threads-atom nil))
+
+  proto/CommonConsumer
+  (listen [this settings]
+    ;; Listen for messages on the queue specified by :queue, 
+    ;; calling the function in :handler each time a message arrives.
+    (let [queue   (-> settings :queue keyword)
+          handler (-> settings :handler)
+          fut     (core/poll-queue! event-bus queue handler stop?-atom)]
+      (swap! threads-atom assoc queue fut))
+    nil))
+
+(defn create-in-mem-consumer 
+  ([bus threads-atom stop?-atom]
+   (->InMemEventBusConsumer bus threads-atom stop?-atom false {} {}))
+  ([bus threads-atom stop?-atom events-map consumer-map]
+   (->InMemEventBusConsumer bus threads-atom stop?-atom false events-map consumer-map)))
+
+
+-- ./src/async_messaging/in_mem_event_bus/core.clj --core.clj
+(ns async-messaging.in-mem-event-bus.core 
+  (:require
+   [clojure.pprint :refer [pprint]]))
+
+(defn poll-queue!
+  "Continuously pops messages from the given `queue` key in `event-bus`
+   and invokes `handler` on each.  Stops when `stop?` atom becomes true."
+  [event-bus queue-key handler stop?]
+  (future
+    (while (not @stop?)
+      (let [message (atom nil)]
+        ;; Atomically pop one message off the queue (if any):
+        (swap! event-bus
+               (fn [bus]
+                 (let [q (get bus queue-key clojure.lang.PersistentQueue/EMPTY)]
+                   (if (empty? q)
+                     bus
+                     (do
+                       (reset! message (peek q))    ;; capture the message
+                       (assoc bus queue-key (pop q)))))))
+        ;; If we got a message, invoke the handler:
+        (when-let [m @message]
+          (handler m)))
+      (Thread/sleep 50))))
+
+(defn iterate-consumer-map-add-listeners! 
+  [threads-atom stop?-atom consumer-map event-bus]
+  (doseq [[_ {:keys [queue handler]}] consumer-map]
+    (pprint queue)
+    (pprint handler)
+    (let [fut (poll-queue! event-bus (keyword queue) handler stop?-atom)]
+      (swap! threads-atom assoc queue fut))))
+-- ./src/async_messaging/dev.clj --dev.clj
+(ns async-messaging.dev
+  (:require [taoensso.carmine :as car :refer [wcar]]
+            [taoensso.carmine.message-queue :as car-mq]
+            [com.stuartsierra.component :as component]
+            [async-messaging.utils :refer [tapc]]
+
+            ;; rabitMQ
+            [langohr.core      :as rmq]
+            [langohr.channel   :as lch]
+            [langohr.queue     :as lq]
+            [langohr.consumers :as lc]
+            [langohr.basic     :as lb]
+            ;; end rabbit
+
+            [async-messaging.protocols :as proto]
+            [async-messaging.in-mem-event-bus.core :as core]
+            [async-messaging.in-mem-event-bus.component :as c-bus]
+            ))
+
+(comment
+  
+  
+  )
+
+-- ./src/async_messaging/core_async/component.clj --component.clj
+(ns async-messaging.core-async.component
+  (:require
+   [clojure.core.async :as async]
+   [com.stuartsierra.component :as component]
+   [async-messaging.protocols :as protocol]
+   [async-messaging.core-async.core :as core]))
+
+(defrecord CoreAsyncProducer [channels]
+  component/Lifecycle
+  (start [this]
+    (assoc this :channels (or channels (atom {}))))
+  (stop [this]
+    (doseq [[_ ch] @channels]
+      (async/close! ch))
+    (assoc this :channels nil))
+
+  protocol/CommonProducer
+  (send-message [this message ops]
+    (let [queue   (-> message :destination :queue keyword)
+          payload (-> message :message)
+          ch      (core/get-or-create-chan channels queue ops)]
+      (if (get ops :async? false)
+        (async/put! ch payload)
+        (async/>!! ch payload)))
+    nil)
+
+  (send-messages [this messages ops]
+    (doseq [m messages]
+      (let [queue   (-> m :destination :queue keyword)
+            payload (-> m :message)
+            ch      (core/get-or-create-chan channels queue ops)]
+        (if (get ops :async? false)
+          (async/put! ch payload)
+          (async/>!! ch payload))))
+    nil))
+
+(defn create-core-async-producer []
+  (map->CoreAsyncProducer {}))
+
+(defrecord CoreAsyncConsumer [channels threads-atom stop?-atom]
+  component/Lifecycle
+  (start [this]
+    (let [threads-atom (or threads-atom (atom {}))
+          stop?-atom   (or stop?-atom (atom false))]
+      (assoc this :threads-atom threads-atom
+             :stop?-atom   stop?-atom)))
+  (stop [this]
+    (reset! stop?-atom true)
+    ;; optionally close channels or let the producer handle it
+    (assoc this :threads-atom nil :stop?-atom nil))
+
+  protocol/CommonConsumer 
+  (listen [this {:keys [queue handler]}]
+    (let [queue-k (keyword queue)
+          ch      (get @channels queue-k)]
+      (when ch
+        ;; Spin up a go-loop that reads from the channel until stop?-atom is true
+        (let [loop-chan (async/go
+                          (while (not @stop?-atom)
+                            (when-let [msg (async/<! ch)]
+                              (handler msg))))]
+          (swap! threads-atom assoc queue-k loop-chan))))
+    nil))
+
+(defn create-core-async-consumer [channels-atom]
+  ;; inject the same channels atom used by CoreAsyncProducer
+  (map->CoreAsyncConsumer {:channels channels-atom}))
+-- ./src/async_messaging/core_async/core.clj --core.clj
+(ns async-messaging.core-async.core
+  (:require [clojure.core.async :as async]))
+
+(defn get-or-create-chan
+  [channels-atom queue {:keys [buffer-size buffer-type]
+                        :or   {buffer-size 100
+                               buffer-type :fixed}}]
+  (or (get @channels-atom queue)
+      (let [buffer (case buffer-type
+                     :dropping (async/dropping-buffer buffer-size)
+                     :sliding  (async/sliding-buffer buffer-size)
+                     ;; Default/fixed buffer
+                     (async/buffer buffer-size))
+            ch     (async/chan buffer)]
+        (swap! channels-atom
+               (fn [m]
+                 (if (contains? m queue)
+                   m
+                   (assoc m queue ch))))
+        (get @channels-atom queue))))
